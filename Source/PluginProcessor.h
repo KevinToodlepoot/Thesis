@@ -23,13 +23,11 @@ struct ChainSettings
     float curve {0};
     float oddGain {0};
     float evenGain {0};
-    float fundGain {0};
     
     float modFreq {0};
     float modDepth {0};
     
     int quality {0};
-    bool noise {0};
 };
 
 ChainSettings getChainSettings(juce::AudioProcessorValueTreeState& apvts);
@@ -86,14 +84,13 @@ public:
 private:
     using Filter = juce::dsp::IIR::Filter<float>;
     
+    using SVFilter = juce::dsp::StateVariableTPTFilter<float>;
+    
     using Gain = juce::dsp::Gain<float>;
     
-    using BPChain = juce::dsp::ProcessorChain<Filter, Gain, Gain>;
-    using APChain = juce::dsp::ProcessorChain<Filter, Filter>;
+    using BPChain = juce::dsp::ProcessorChain<SVFilter, Gain, Gain>;
     
     BPChain leftChain[NUM_HARM], rightChain[NUM_HARM];
-    
-    APChain leftAPChain, rightAPChain;
     
     enum BPChainPositions
     {
@@ -102,23 +99,14 @@ private:
         OddEvenGain
     };
     
-    enum APChainPositions
-    {
-        APFilter1,
-        APFilter2
-    };
-    
     using Coefficients = Filter::CoefficientsPtr;
     
     void updateAll(float modVal = 0.f);
     static void updateCoefficients (Coefficients& old, const Coefficients& replacements);
+    bool updateSVFilter (const ChainSettings& chainSettings, float modVal, int i);
     void updateFilter (const ChainSettings& chainSettings, float modVal, int i);
     void updateCurveGain (const ChainSettings& chainSettings, int i);
     void updateOddEvenGain (const ChainSettings& chainSettings, int i);
-    
-    float applyFilter(float samp, int i);
-    float applyCurveGain(float samp, int i);
-    float applyOddEvenGain(float samp, int i);
     
 
     //==============================================================================
