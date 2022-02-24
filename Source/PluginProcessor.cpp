@@ -152,72 +152,46 @@ bool ThesisAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 
 void ThesisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
+    // initialize variables
     juce::ScopedNoDenormals noDenormals;
     auto totalNumInputChannels  = getTotalNumInputChannels();
     auto chainSettings = getChainSettings(apvts);
     int bufferSize = buffer.getNumSamples();
-    bool filterCheck = true;
-    
-    float freq, modVal[bufferSize], nyquist, leftSamp, rightSamp, modDepth;
+    int numHarm = int(50.f * pow(2.f, float(chainSettings.quality)));
+    bool modState;
+    float freq, modVal[bufferSize], nyquist, modDepth, detune;
     
     nyquist = float(getSampleRate()) / 2.f;
-    
+    detune = chainSettings.detune;
     modDepth = chainSettings.modDepth / 100.f;
-    
-    updateAll();
-    
-    mod.updateMod(chainSettings.modFreq);
+    modState = chainSettings.modDetune || chainSettings.modFreq || chainSettings.modTimbre;
+    mod.updateMod(chainSettings.modRate);
     
     // Fill modulator array with values
     for (int i = 0; i < bufferSize; i++)
         modVal[i] = mod.modBlock(bufferSize)[i] * modDepth;
     
+    // update dsp based on parameters
+    updateAll();
+    
+    // copy contents of input buffer and create a temporary buffer to fill
     juce::AudioBuffer<float> effectBuffer;
     effectBuffer.makeCopyOf(buffer);
     
     juce::AudioBuffer<float> tempBuffer;
     
     //for loop that iterates over how many BP filters will be made
-    for (int harm = 0; harm < chainSettings.quality; harm++)
+    for (int harm = 0; harm < numHarm; harm++)
     {
         tempBuffer.makeCopyOf(buffer);
-        
-        freq = (chainSettings.freq + chainSettings.modDepth) * float(harm + 1);
+        freq = chainSettings.freq * pow(float(harm + 1), detune);
         
         if (freq < nyquist)
         {
-            //iterate through each sample in buffer to fill harmonic tempBuffer
-            for (int n = 0; n < bufferSize; n++)
-            {
-                //update BP filter's frequency based on modulator
-                filterCheck = updateSVFilter(chainSettings, modVal[n], harm);
-
-                leftSamp = tempBuffer.getSample(LEFT_CHANNEL, n);
-                rightSamp = tempBuffer.getSample(RIGHT_CHANNEL, n);
-                
-                // 1.) apply band-pass filter to sample
-                leftSamp = leftChain[harm].get<BPChainPositions::BPFilter>().processSample(LEFT_CHANNEL, leftSamp);
-                rightSamp = rightChain[harm].get<BPChainPositions::BPFilter>().processSample(RIGHT_CHANNEL, rightSamp);
-                
-                // 2.) apply curve gain
-                leftSamp = leftChain[harm].get<BPChainPositions::CurveGain>().processSample(leftSamp);
-                rightSamp = rightChain[harm].get<BPChainPositions::CurveGain>().processSample(rightSamp);
-                
-                // 3.) apply odd/even harmonic gain
-                leftSamp = leftChain[harm].get<BPChainPositions::OddEvenGain>().processSample(leftSamp);
-                rightSamp = rightChain[harm].get<BPChainPositions::OddEvenGain>().processSample(rightSamp);
-                
-                // 4.) silence sample if outside bounds
-
-                
-                // 5.) rewrite sample to tempBuffer
-                tempBuffer.setSample(LEFT_CHANNEL, n, leftSamp);
-                tempBuffer.setSample(RIGHT_CHANNEL, n, rightSamp);
-                
-                if (!filterCheck)
-                    tempBuffer.applyGain(n, 1, 0.f);
-            
-            }
+            if (modState)
+                processWithMod(tempBuffer, chainSettings, modVal, harm);
+            else
+                processNoMod(tempBuffer, harm);
             
             // fill effectBuffer with each harmonic tempBuffer
             if (harm == 0)
@@ -232,6 +206,59 @@ void ThesisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     }
     
     buffer.makeCopyOf(effectBuffer);
+}
+
+void ThesisAudioProcessor::processNoMod(juce::AudioBuffer<float> &buffer, int harm)
+{
+    juce::dsp::AudioBlock<float> tempBlock(buffer);
+                
+    auto leftBlock = tempBlock.getSingleChannelBlock(LEFT_CHANNEL);
+    auto rightBlock = tempBlock.getSingleChannelBlock(RIGHT_CHANNEL);
+                
+    juce::dsp::ProcessContextReplacing<float> leftContext(leftBlock);
+    juce::dsp::ProcessContextReplacing<float> rightContext(rightBlock);
+                
+    leftChain[harm].process(leftContext);
+    rightChain[harm].process(rightContext);
+}
+
+void ThesisAudioProcessor::processWithMod(juce::AudioBuffer<float> &buffer, const ChainSettings &chainSettings, float* modVal, int harm)
+{
+    int bufferSize = buffer.getNumSamples();
+    
+    float leftSamp, rightSamp;
+    
+    bool filterCheck = true;
+    
+    //iterate through each sample in buffer to fill harmonic tempBuffer
+    for (int n = 0; n < bufferSize; n++)
+    {
+        //update BP filter's frequency based on modulator
+        filterCheck = updateSVFilter(chainSettings, modVal[n], harm);
+
+        leftSamp = buffer.getSample(LEFT_CHANNEL, n);
+        rightSamp = buffer.getSample(RIGHT_CHANNEL, n);
+        
+        // 1.) apply band-pass filter to sample
+        leftSamp = leftChain[harm].get<BPChainPositions::BPFilter>().processSample(LEFT_CHANNEL, leftSamp);
+        rightSamp = rightChain[harm].get<BPChainPositions::BPFilter>().processSample(RIGHT_CHANNEL, rightSamp);
+        
+        // 2.) apply curve gain
+        leftSamp = leftChain[harm].get<BPChainPositions::CurveGain>().processSample(leftSamp);
+        rightSamp = rightChain[harm].get<BPChainPositions::CurveGain>().processSample(rightSamp);
+        
+        // 3.) apply odd/even harmonic gain
+        leftSamp = leftChain[harm].get<BPChainPositions::OddEvenGain>().processSample(leftSamp);
+        rightSamp = rightChain[harm].get<BPChainPositions::OddEvenGain>().processSample(rightSamp);
+        
+        // 4.) rewrite sample to tempBuffer
+        buffer.setSample(LEFT_CHANNEL, n, leftSamp);
+        buffer.setSample(RIGHT_CHANNEL, n, rightSamp);
+        
+        // 5.) silence sample if the frequency is outside of bounds
+        if (!filterCheck)
+            buffer.applyGain(n, 1, 0.f);
+    }
 }
 
 void ThesisAudioProcessor::updateAll(float modVal)
@@ -259,10 +286,24 @@ void ThesisAudioProcessor::updateAll(float modVal)
 
 bool ThesisAudioProcessor::updateSVFilter(const ChainSettings &chainSettings, float modVal, int i)
 {
-    float freq, q, nyquist;
+    float freq, q, nyquist, detune;
     
-    freq = (modVal + 1.f) * (chainSettings.freq) * float(i + 1);
+    if (i > 0)
+    {
+        detune = chainSettings.detune;
+        
+        if (chainSettings.modDetune)
+            detune += (modVal / 200.f);
+    }
+    else
+        detune = 1;
+    
+    detune = detune == 0 ? detune = 0.1 : detune;
+    
+    freq = (modVal + 1.f) * (chainSettings.freq) * pow(float(i + 1), detune);
     q = chainSettings.q * (float(i) / 2.f + 1);
+    
+    freq = wrap(freq, getSampleRate());
     
     nyquist = getSampleRate() / 2.f;
     
@@ -280,34 +321,13 @@ bool ThesisAudioProcessor::updateSVFilter(const ChainSettings &chainSettings, fl
     return true;
 }
 
-void ThesisAudioProcessor::updateCoefficients(Coefficients &old, const Coefficients &replacements)
-{
-    *old = *replacements;
-}
-
-void ThesisAudioProcessor::updateFilter(const ChainSettings &chainSettings, float modVal, int i)
-{
-    float freq, q;
-    
-    freq = (chainSettings.freq + modVal) * float(i + 1);
-    q = chainSettings.q * (float(i) / 2.f + 1);
-//    q = chainSettings.q;
-    
-    auto bpCoefficients = juce::dsp::IIR::Coefficients<float>::makeBandPass(getSampleRate(),
-                                                                            freq,
-                                                                            q);
-        
-//    updateCoefficients(leftChain[i].get<BPChainPositions::BPFilter>().coefficients, bpCoefficients);
-//    updateCoefficients(rightChain[i].get<BPChainPositions::BPFilter>().coefficients, bpCoefficients);
-}
-
 void ThesisAudioProcessor::updateCurveGain(const ChainSettings &chainSettings, int i)
 {
     float gain, normGain, q;
     
     q = chainSettings.q * (float(i) / 2.f + 1);
     
-    normGain = 1.f/q;
+    normGain = pow((1.f/q), 0.8);
     
     gain = pow((-1.f / float(NUM_HARM)) * float(i) + 1.f, (1.f / chainSettings.curve));
     
@@ -319,6 +339,8 @@ void ThesisAudioProcessor::updateCurveGain(const ChainSettings &chainSettings, i
 
 void ThesisAudioProcessor::updateOddEvenGain(const ChainSettings &chainSettings, int i)
 {
+    float oddGain = chainSettings.timbre * -1.f + 1.f;
+    float evenGain = chainSettings.timbre;
     if (i == 0)
     {
         leftChain[i].get<BPChainPositions::OddEvenGain>().setGainLinear(1.f);
@@ -326,14 +348,30 @@ void ThesisAudioProcessor::updateOddEvenGain(const ChainSettings &chainSettings,
     }
     else if (i % 2 == 1)
     {
-        leftChain[i].get<BPChainPositions::OddEvenGain>().setGainDecibels(chainSettings.oddGain);
-        rightChain[i].get<BPChainPositions::OddEvenGain>().setGainDecibels(chainSettings.oddGain);
+        leftChain[i].get<BPChainPositions::OddEvenGain>().setGainLinear(oddGain);
+        rightChain[i].get<BPChainPositions::OddEvenGain>().setGainLinear(oddGain);
     }
     else if (i % 2 == 0)
     {
-        leftChain[i].get<BPChainPositions::OddEvenGain>().setGainDecibels(chainSettings.evenGain);
-        rightChain[i].get<BPChainPositions::OddEvenGain>().setGainDecibels(chainSettings.evenGain);
+        leftChain[i].get<BPChainPositions::OddEvenGain>().setGainLinear(evenGain);
+        rightChain[i].get<BPChainPositions::OddEvenGain>().setGainLinear(evenGain);
     }
+}
+
+float ThesisAudioProcessor::wrap(float x, int sampleRate)
+{
+    float y;
+    
+    if (x > sampleRate / 2)
+        y = x - int(ceil( x )) % sampleRate;
+    
+    else if (x < 20)
+        y = 20 - x + 20;
+    
+    else
+        y = x;
+        
+    return y;
 }
 
 //==============================================================================
@@ -366,7 +404,7 @@ void ThesisAudioProcessor::setStateInformation (const void* data, int sizeInByte
     if ( tree.isValid() )
     {
         apvts.replaceState(tree);
-        updateAll(0.f);
+        updateAll();
     }
 }
 
@@ -374,14 +412,23 @@ ChainSettings getChainSettings(juce::AudioProcessorValueTreeState& apvts)
 {
     ChainSettings settings;
     
+    //==============================================================================
+    settings.timbre = apvts.getRawParameterValue("Timbre")->load();
     settings.freq = apvts.getRawParameterValue("Center Frequency")->load();
     settings.q = apvts.getRawParameterValue("Q")->load();
-    settings.curve = apvts.getRawParameterValue("Curve")->load();
-    settings.oddGain = apvts.getRawParameterValue("Odd Gain")->load();
-    settings.evenGain = apvts.getRawParameterValue("Even Gain")->load();
+    
+    //==============================================================================
+    settings.stereoLink = apvts.getRawParameterValue("Stereo Link")->load();
     settings.quality = apvts.getRawParameterValue("Quality")->load();
-    settings.modDepth = apvts.getRawParameterValue("Mod Depth")->load();
+    settings.curve = apvts.getRawParameterValue("Curve")->load();
+    settings.detune = apvts.getRawParameterValue("Detune")->load();
+    
+    //==============================================================================
+    settings.modTimbre = apvts.getRawParameterValue("Mod Timbre")->load();
     settings.modFreq = apvts.getRawParameterValue("Mod Freq")->load();
+    settings.modDetune = apvts.getRawParameterValue("Mod Detune")->load();
+    settings.modDepth = apvts.getRawParameterValue("Mod Depth")->load();
+    settings.modRate = apvts.getRawParameterValue("Mod Rate")->load();
     
     return settings;
 }
@@ -391,6 +438,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
+    //==============================================================================
+    layout.add(std::make_unique<juce::AudioParameterFloat>("Timbre",
+                                                           "Timbre",
+                                                           juce::NormalisableRange<float>(0.f, 1.f, 0.05f, 1.f),
+                                                           0.5f));
+    
     layout.add(std::make_unique<juce::AudioParameterFloat>("Center Frequency",
                                                            "Center Frequency",
                                                            juce::NormalisableRange<float>(20.f, 10000.f, 1.f, 0.25f),
@@ -398,37 +451,44 @@ juce::AudioProcessorValueTreeState::ParameterLayout
     
     layout.add(std::make_unique<juce::AudioParameterFloat>("Q",
                                                            "Q",
-                                                           juce::NormalisableRange<float>(1.f, 50.f, 0.1f, 1.f),
+                                                           juce::NormalisableRange<float>(1.f, 100.f, 0.1f, 1.f),
                                                            20.f));
-    
+        
+    layout.add(std::make_unique<juce::AudioParameterFloat>("Detune",
+                                                           "Detune",
+                                                           juce::NormalisableRange<float>(0.5f, 2.f, 0.01f, 1.f),
+                                                           1.f));
+        
+    //==============================================================================
+    layout.add(std::make_unique<juce::AudioParameterFloat>("Stereo Link",
+                                                           "Stereo Link",
+                                                           juce::NormalisableRange<float>(0.f, 1.f, 0.05f, 1.f),
+                                                           1.f));
+        
+    layout.add(std::make_unique<juce::AudioParameterInt>("Quality",
+                                                         "Quality",
+                                                         0, 2, 1));
+        
     layout.add(std::make_unique<juce::AudioParameterFloat>("Curve",
                                                            "Curve",
                                                            juce::NormalisableRange<float>(0.1f, 10.f, 0.1f, 0.25f),
                                                            1.f));
     
-    layout.add(std::make_unique<juce::AudioParameterFloat>("Odd Gain",
-                                                           "Odd Gain",
-                                                           juce::NormalisableRange<float>(-24.f, 6.f, 0.1f, 1.0f),
-                                                           1.f));
-    
-    layout.add(std::make_unique<juce::AudioParameterFloat>("Even Gain",
-                                                           "Even Gain",
-                                                           juce::NormalisableRange<float>(-24.f, 6.f, 0.1f, 1.0f),
-                                                           1.f));
-    
-    layout.add(std::make_unique<juce::AudioParameterInt>("Quality",
-                                                         "Quality",
-                                                         50,
-                                                         200,
-                                                         100));
+        
+    //==============================================================================
+    layout.add(std::make_unique<juce::AudioParameterBool>("Mod Timbre", "Mod Timbre", false));
+        
+    layout.add(std::make_unique<juce::AudioParameterBool>("Mod Freq", "Mod Freq", false));
+        
+    layout.add(std::make_unique<juce::AudioParameterBool>("Mod Detune", "Mod Detune", false));
         
     layout.add(std::make_unique<juce::AudioParameterFloat>("Mod Depth",
                                                            "Mod Depth",
-                                                           juce::NormalisableRange<float>(0.f, 50.f, 0.1f, 1.f),
+                                                           juce::NormalisableRange<float>(0.f, 100.f, 0.1f, 1.f),
                                                            1.f));
         
-    layout.add(std::make_unique<juce::AudioParameterFloat>("Mod Freq",
-                                                           "Mod Freq",
+    layout.add(std::make_unique<juce::AudioParameterFloat>("Mod Rate",
+                                                           "Mod Rate",
                                                            juce::NormalisableRange<float>(0.1f, 20.f, 0.1f, 1.f),
                                                            1.f));
     

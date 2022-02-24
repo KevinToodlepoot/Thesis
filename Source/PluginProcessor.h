@@ -18,16 +18,26 @@
 
 struct ChainSettings
 {
+    /* Main Section */
+    float timbre {0};
     float freq {0};
     float q {0};
+    
+    /* Secondary Section */
+    float stereoLink {0};
+    int quality {0};
     float curve {0};
+    float detune {0};
+    
+    /* Mod Section */
+    bool modTimbre {0};
+    bool modFreq {0};
+    bool modDetune {0};
+    float modRate {0};
+    float modDepth {0};
+
     float oddGain {0};
     float evenGain {0};
-    
-    float modFreq {0};
-    float modDepth {0};
-    
-    int quality {0};
 };
 
 ChainSettings getChainSettings(juce::AudioProcessorValueTreeState& apvts);
@@ -82,7 +92,10 @@ public:
     Modulator mod;
 
 private:
-    using Filter = juce::dsp::IIR::Filter<float>;
+    void processWithMod(juce::AudioBuffer<float>& buffer, const ChainSettings& chainSettings, float* modVal, int harm);
+    void processNoMod(juce::AudioBuffer<float>& buffer, int harm);
+    
+    float wrap(float x, int sampleRate);
     
     using SVFilter = juce::dsp::StateVariableTPTFilter<float>;
     
@@ -99,12 +112,8 @@ private:
         OddEvenGain
     };
     
-    using Coefficients = Filter::CoefficientsPtr;
-    
     void updateAll(float modVal = 0.f);
-    static void updateCoefficients (Coefficients& old, const Coefficients& replacements);
     bool updateSVFilter (const ChainSettings& chainSettings, float modVal, int i);
-    void updateFilter (const ChainSettings& chainSettings, float modVal, int i);
     void updateCurveGain (const ChainSettings& chainSettings, int i);
     void updateOddEvenGain (const ChainSettings& chainSettings, int i);
     
