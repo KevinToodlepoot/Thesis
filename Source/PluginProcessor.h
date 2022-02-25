@@ -30,7 +30,6 @@ struct ChainSettings
     float detune {0};
     
     /* Mod Section */
-    bool modTimbre {0};
     bool modFreq {0};
     bool modDetune {0};
     float modRate {0};
@@ -90,12 +89,15 @@ public:
     juce::AudioProcessorValueTreeState apvts {*this, nullptr, "Parameters", createParameterLayout()};
     
     Modulator mod;
+    
+    std::vector<float> modVector;
 
 private:
     void processWithMod(juce::AudioBuffer<float>& buffer, const ChainSettings& chainSettings, float* modVal, int harm);
     void processNoMod(juce::AudioBuffer<float>& buffer, int harm);
     
     float wrap(float x, int sampleRate);
+    float getCurFreq(const ChainSettings& chainSettings, int harm);
     
     using SVFilter = juce::dsp::StateVariableTPTFilter<float>;
     
@@ -112,8 +114,8 @@ private:
         OddEvenGain
     };
     
-    void updateAll(float modVal = 0.f);
-    bool updateSVFilter (const ChainSettings& chainSettings, float modVal, int i);
+    void updateAll();
+    bool updateSVFilter (const ChainSettings& chainSettings, int i);
     void updateCurveGain (const ChainSettings& chainSettings, int i);
     void updateOddEvenGain (const ChainSettings& chainSettings, int i);
     

@@ -93,6 +93,10 @@ void ThesisAudioProcessor::changeProgramName (int index, const juce::String& new
 //==============================================================================
 void ThesisAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    modVector.clear();
+    for (int samp = 0; samp < samplesPerBlock; samp++)
+        modVector.push_back(0.f);
+    
     mod.initMod(sampleRate);
     mod.setMod(1.f);
     
@@ -110,7 +114,6 @@ void ThesisAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     }
     
     updateAll();
-    
 }
 
 void ThesisAudioProcessor::releaseResources()
@@ -164,12 +167,12 @@ void ThesisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     nyquist = float(getSampleRate()) / 2.f;
     detune = chainSettings.detune;
     modDepth = chainSettings.modDepth / 100.f;
-    modState = chainSettings.modDetune || chainSettings.modFreq || chainSettings.modTimbre;
+    modState = chainSettings.modDetune || chainSettings.modFreq;
     mod.updateMod(chainSettings.modRate);
     
     // Fill modulator array with values
     for (int i = 0; i < bufferSize; i++)
-        modVal[i] = mod.modBlock(bufferSize)[i] * modDepth;
+        modVector[i] = mod.modBlock(bufferSize)[i] * modDepth;
     
     // update dsp based on parameters
     updateAll();
@@ -184,7 +187,7 @@ void ThesisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     for (int harm = 0; harm < numHarm; harm++)
     {
         tempBuffer.makeCopyOf(buffer);
-        freq = chainSettings.freq * pow(float(harm + 1), detune);
+        freq = getCurFreq(chainSettings, harm);
         
         if (freq < nyquist)
         {
@@ -234,7 +237,7 @@ void ThesisAudioProcessor::processWithMod(juce::AudioBuffer<float> &buffer, cons
     for (int n = 0; n < bufferSize; n++)
     {
         //update BP filter's frequency based on modulator
-        filterCheck = updateSVFilter(chainSettings, modVal[n], harm);
+        filterCheck = updateSVFilter(chainSettings, harm);
 
         leftSamp = buffer.getSample(LEFT_CHANNEL, n);
         rightSamp = buffer.getSample(RIGHT_CHANNEL, n);
@@ -257,11 +260,11 @@ void ThesisAudioProcessor::processWithMod(juce::AudioBuffer<float> &buffer, cons
         
         // 5.) silence sample if the frequency is outside of bounds
         if (!filterCheck)
-            buffer.applyGain(n, 1, 0.f);
+            buffer.applyGainRamp(0, n, 1.f, 0.f);
     }
 }
 
-void ThesisAudioProcessor::updateAll(float modVal)
+void ThesisAudioProcessor::updateAll()
 {
     ChainSettings chainSettings = getChainSettings(apvts);
     
@@ -271,11 +274,11 @@ void ThesisAudioProcessor::updateAll(float modVal)
     
     for (int i = 0; i < NUM_HARM; i++)
     {
-        freq = chainSettings.freq * float(i + 1);
+        freq = getCurFreq(chainSettings, i);
         
         if (freq < nyquist)
         {
-            updateSVFilter(chainSettings, modVal, i);
+            updateSVFilter(chainSettings, i);
             updateCurveGain(chainSettings, i);
             updateOddEvenGain(chainSettings, i);
         }
@@ -284,23 +287,11 @@ void ThesisAudioProcessor::updateAll(float modVal)
     }
 }
 
-bool ThesisAudioProcessor::updateSVFilter(const ChainSettings &chainSettings, float modVal, int i)
+bool ThesisAudioProcessor::updateSVFilter(const ChainSettings &chainSettings, int i)
 {
-    float freq, q, nyquist, detune;
+    float freq, q, nyquist;
     
-    if (i > 0)
-    {
-        detune = chainSettings.detune;
-        
-        if (chainSettings.modDetune)
-            detune += (modVal / 200.f);
-    }
-    else
-        detune = 1;
-    
-    detune = detune == 0 ? detune = 0.1 : detune;
-    
-    freq = (modVal + 1.f) * (chainSettings.freq) * pow(float(i + 1), detune);
+    freq = getCurFreq(chainSettings, i);
     q = chainSettings.q * (float(i) / 2.f + 1);
     
     freq = wrap(freq, getSampleRate());
@@ -339,8 +330,12 @@ void ThesisAudioProcessor::updateCurveGain(const ChainSettings &chainSettings, i
 
 void ThesisAudioProcessor::updateOddEvenGain(const ChainSettings &chainSettings, int i)
 {
-    float oddGain = chainSettings.timbre * -1.f + 1.f;
-    float evenGain = chainSettings.timbre;
+    float timbre, oddGain, evenGain;
+    
+    timbre = chainSettings.timbre;
+    oddGain = timbre * -1.f + 1.f;
+    evenGain = timbre;
+    
     if (i == 0)
     {
         leftChain[i].get<BPChainPositions::OddEvenGain>().setGainLinear(1.f);
@@ -372,6 +367,31 @@ float ThesisAudioProcessor::wrap(float x, int sampleRate)
         y = x;
         
     return y;
+}
+
+float ThesisAudioProcessor::getCurFreq(const ChainSettings& chainSettings, int harm)
+{
+    float fc, detune, outFreq, freqModVal;
+    
+    fc = chainSettings.freq;
+    
+    freqModVal = chainSettings.modFreq ? modVector[harm] : 0.f;
+    
+    if (harm > 0)
+    {
+        detune = chainSettings.detune;
+        
+        if (chainSettings.modDetune)
+            detune += (modVector[harm] / 200.f);
+    }
+    else
+        detune = 1;
+    
+    detune = detune == 0 ? detune = 0.1 : detune;
+    
+    outFreq = (freqModVal + 1.f) * fc * pow(float(harm + 1), detune);
+    
+    return outFreq;
 }
 
 //==============================================================================
@@ -424,7 +444,6 @@ ChainSettings getChainSettings(juce::AudioProcessorValueTreeState& apvts)
     settings.detune = apvts.getRawParameterValue("Detune")->load();
     
     //==============================================================================
-    settings.modTimbre = apvts.getRawParameterValue("Mod Timbre")->load();
     settings.modFreq = apvts.getRawParameterValue("Mod Freq")->load();
     settings.modDetune = apvts.getRawParameterValue("Mod Detune")->load();
     settings.modDepth = apvts.getRawParameterValue("Mod Depth")->load();
@@ -476,8 +495,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout
     
         
     //==============================================================================
-    layout.add(std::make_unique<juce::AudioParameterBool>("Mod Timbre", "Mod Timbre", false));
-        
     layout.add(std::make_unique<juce::AudioParameterBool>("Mod Freq", "Mod Freq", false));
         
     layout.add(std::make_unique<juce::AudioParameterBool>("Mod Detune", "Mod Detune", false));
